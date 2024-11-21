@@ -1,0 +1,9 @@
+[package]
+name = "bluer-miflora"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bluer = { version = "0.17" }
+thiserror = { version = "2.0" }
+tracing = { version = "0.1" }

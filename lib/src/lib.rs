@@ -1,7 +1,6 @@
 use std::borrow::Cow;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::Context;
 use bluer::gatt::remote::{Characteristic, CharacteristicWriteRequest};
 use bluer::gatt::WriteOp;
 use bluer::{Adapter, Address, Device};
@@ -39,10 +38,10 @@ const CHARACTERISTIC_HISTORY_CTRL_ID: u16 = 61; // 0x3d; // 0x3e
 const CHARACTERISTIC_HISTORY_READ_ID: u16 = 59; // 0x3b; // 0x3c
 const CHARACTERISTIC_HISTORY_TIME_ID: u16 = 64;
 
-const CMD_BLINK_LED: [u8; 2] = [0xfd, 0xff];
+// const CMD_BLINK_LED: [u8; 2] = [0xfd, 0xff];
 const CMD_HISTORY_READ_INIT: [u8; 3] = [0xa0, 0x00, 0x00];
 const CMD_HISTORY_READ_SUCCESS: [u8; 3] = [0xa2, 0x00, 0x00];
-const CMD_HISTORY_READ_FAILED: [u8; 3] = [0xa3, 0x00, 0x00];
+// const CMD_HISTORY_READ_FAILED: [u8; 3] = [0xa3, 0x00, 0x00];
 const CMD_REALTIME_DISABLE: [u8; 2] = [0xc0, 0x1f];
 const CMD_REALTIME_ENABLE: [u8; 2] = [0xa0, 0x1f];
 
@@ -58,6 +57,58 @@ fn now() -> f64 {
         .duration_since(UNIX_EPOCH)
         .expect("went back in time")
         .as_secs_f64()
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error("unable to find device with address {address}")]
+    DeviceNotFound {
+        address: Address,
+        #[source]
+        cause: bluer::Error,
+    },
+    #[error("unable to find service {service_id}")]
+    ServiceNotFound {
+        service_id: u16,
+        #[source]
+        cause: bluer::Error,
+    },
+    #[error("unable to find characteristic {characteristic_id} for service {service_id}")]
+    CharacteristicNotFound {
+        characteristic_id: u16,
+        service_id: u16,
+        #[source]
+        cause: bluer::Error,
+    },
+    #[error("unable to read from service {service_id} and characteristic {characteristic_id}")]
+    UnableToRead {
+        characteristic_id: u16,
+        service_id: u16,
+        #[source]
+        cause: bluer::Error,
+    },
+    #[error("unable to write to service {service_id} and characteristic {characteristic_id}")]
+    UnableToWrite {
+        characteristic_id: u16,
+        service_id: u16,
+        #[source]
+        cause: bluer::Error,
+    },
+    #[error("the payload was not correctly written")]
+    InvalidWrittenValue {
+        characteristic_id: u16,
+        service_id: u16,
+    },
+    #[error("unable to execute command with bluer")]
+    CommandFailed {
+        #[source]
+        cause: bluer::Error,
+    },
+    #[error("too many retries")]
+    TooManyRetries {
+        retries: u8,
+        causes: Vec<bluer::Error>,
+    },
 }
 
 #[derive(Clone)]
@@ -218,39 +269,57 @@ impl From<Device> for Miflora {
 }
 
 impl Miflora {
-    pub fn from_adapter(adapter: &Adapter, address: Address) -> anyhow::Result<Self> {
-        let device = adapter.device(address)?;
-        Ok(Self::from(device))
+    pub fn from_adapter(adapter: &Adapter, address: Address) -> Result<Self, Error> {
+        adapter
+            .device(address)
+            .map(Self::from)
+            .map_err(|err| Error::DeviceNotFound {
+                address,
+                cause: err,
+            })
     }
 
-    async fn characteristic(
-        &self,
-        service_id: u16,
-        char_id: u16,
-    ) -> anyhow::Result<Characteristic> {
-        let service = self
-            .device
-            .service(service_id)
-            .await
-            .with_context(|| format!("getting service {service_id}"))?;
-        let char = service
-            .characteristic(char_id)
-            .await
-            .with_context(|| format!("getting characteristic {char_id}"))?;
+    async fn characteristic(&self, service_id: u16, char_id: u16) -> Result<Characteristic, Error> {
+        let service =
+            self.device
+                .service(service_id)
+                .await
+                .map_err(|err| Error::ServiceNotFound {
+                    service_id,
+                    cause: err,
+                })?;
+        let char =
+            service
+                .characteristic(char_id)
+                .await
+                .map_err(|err| Error::CharacteristicNotFound {
+                    characteristic_id: char_id,
+                    service_id,
+                    cause: err,
+                })?;
         Ok(char)
     }
 
-    async fn read(&self, service_id: u16, char_id: u16) -> anyhow::Result<Vec<u8>> {
+    async fn read(&self, service_id: u16, char_id: u16) -> Result<Vec<u8>, Error> {
         let char = self.characteristic(service_id, char_id).await?;
-        let data = char.read().await?;
-        Ok(data)
+        char.read().await.map_err(|err| Error::UnableToRead {
+            characteristic_id: char_id,
+            service_id,
+            cause: err,
+        })
     }
 
     #[tracing::instrument(skip(self), fields(address = %self.device.address()))]
-    async fn try_connect(&self, retry: u8) -> anyhow::Result<()> {
+    pub async fn try_connect(&self, retry: u8) -> Result<(), Error> {
         let mut count = retry;
+        let mut causes = Vec::new();
         while count > 0 {
-            if self.device.is_connected().await? {
+            if self
+                .device
+                .is_connected()
+                .await
+                .map_err(|err| Error::CommandFailed { cause: err })?
+            {
                 tracing::debug!("already connected");
                 return Ok(());
             }
@@ -261,15 +330,19 @@ impl Miflora {
                 }
                 Err(err) => {
                     tracing::warn!(message = "unable to connect", cause = %err);
+                    causes.push(err);
                 }
             }
             count -= 1;
         }
-        Err(anyhow::anyhow!("unable to connect..."))
+        Err(Error::TooManyRetries {
+            retries: retry,
+            causes,
+        })
     }
 
     #[tracing::instrument(skip(self), fields(address = %self.device.address()))]
-    async fn read_system(&self) -> anyhow::Result<System> {
+    pub async fn read_system(&self) -> Result<System, Error> {
         let data = self
             .read(SERVICE_DATA_ID, CHARACTERISTIC_FIRMWARE_ID)
             .await?;
@@ -277,7 +350,7 @@ impl Miflora {
     }
 
     #[tracing::instrument(skip(self), fields(address = %self.device.address()))]
-    async fn read_realtime_values(&self) -> anyhow::Result<RealtimeEntry> {
+    pub async fn read_realtime_values(&self) -> Result<RealtimeEntry, Error> {
         self.set_realtime_data_mode(true).await?;
 
         let data = self.read(SERVICE_DATA_ID, CHARACTERISTIC_DATA_ID).await?;
@@ -285,12 +358,16 @@ impl Miflora {
     }
 
     #[tracing::instrument(skip(self), fields(address = %self.device.address()))]
-    async fn read_epoch_time(&self) -> anyhow::Result<u64> {
+    pub async fn read_epoch_time(&self) -> Result<u64, Error> {
         let start = now();
         let char = self
             .characteristic(SERVICE_HISTORY_ID, CHARACTERISTIC_HISTORY_TIME_ID)
             .await?;
-        let data = char.read().await?;
+        let data = char.read().await.map_err(|err| Error::UnableToWrite {
+            characteristic_id: CHARACTERISTIC_HISTORY_TIME_ID,
+            service_id: SERVICE_HISTORY_ID,
+            cause: err,
+        })?;
         let wall_time = (now() + start) / 2.0;
         let epoch_offset = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
         let epoch_time = (wall_time as u64) - (epoch_offset as u64);
@@ -303,19 +380,27 @@ impl Miflora {
     }
 
     #[tracing::instrument(skip(self), fields(address = %self.device.address()))]
-    async fn read_historical_values(&self) -> anyhow::Result<Vec<HistoricalEntry>> {
+    pub async fn read_historical_values(&self) -> Result<Vec<HistoricalEntry>, Error> {
         let ctrl_char = self
             .characteristic(SERVICE_HISTORY_ID, CHARACTERISTIC_HISTORY_CTRL_ID)
             .await?;
         ctrl_char
             .write_ext(&CMD_HISTORY_READ_INIT, &WRITE_OPTS)
             .await
-            .context("enabling history read")?;
+            .map_err(|err| Error::UnableToWrite {
+                characteristic_id: CHARACTERISTIC_HISTORY_CTRL_ID,
+                service_id: SERVICE_HISTORY_ID,
+                cause: err,
+            })?;
         //
         let char = self
             .characteristic(SERVICE_HISTORY_ID, CHARACTERISTIC_HISTORY_READ_ID)
             .await?;
-        let raw_history_data = char.read().await?;
+        let raw_history_data = char.read().await.map_err(|err| Error::UnableToRead {
+            characteristic_id: CHARACTERISTIC_HISTORY_READ_ID,
+            service_id: SERVICE_HISTORY_ID,
+            cause: err,
+        })?;
         let history_length = u16::from_le_bytes([raw_history_data[0], raw_history_data[1]]);
         //
         let mut result = Vec::with_capacity(history_length as usize);
@@ -327,8 +412,19 @@ impl Miflora {
             for i in 0..history_length {
                 tracing::debug!("loading entry {i}");
                 let payload = self.historical_entry_address(i);
-                ctrl_char.write_ext(&payload, &WRITE_OPTS).await?;
-                let data = read_char.read().await?;
+                ctrl_char
+                    .write_ext(&payload, &WRITE_OPTS)
+                    .await
+                    .map_err(|err| Error::UnableToWrite {
+                        characteristic_id: CHARACTERISTIC_HISTORY_CTRL_ID,
+                        service_id: SERVICE_HISTORY_ID,
+                        cause: err,
+                    })?;
+                let data = read_char.read().await.map_err(|err| Error::UnableToRead {
+                    characteristic_id: CHARACTERISTIC_HISTORY_READ_ID,
+                    service_id: SERVICE_HISTORY_ID,
+                    cause: err,
+                })?;
                 result.push(HistoricalEntry::new(data, epoch_time));
             }
         }
@@ -336,17 +432,22 @@ impl Miflora {
     }
 
     #[tracing::instrument(skip(self), fields(address = %self.device.address()))]
-    async fn clear_historical_entries(&self) -> anyhow::Result<()> {
+    pub async fn clear_historical_entries(&self) -> Result<(), Error> {
         let ctrl_char = self
             .characteristic(SERVICE_HISTORY_ID, CHARACTERISTIC_HISTORY_CTRL_ID)
             .await?;
         ctrl_char
             .write_ext(&CMD_HISTORY_READ_SUCCESS, &WRITE_OPTS)
-            .await?;
+            .await
+            .map_err(|err| Error::UnableToRead {
+                characteristic_id: CHARACTERISTIC_HISTORY_CTRL_ID,
+                service_id: SERVICE_HISTORY_ID,
+                cause: err,
+            })?;
         Ok(())
     }
 
-    async fn set_realtime_data_mode(&self, enabled: bool) -> anyhow::Result<()> {
+    async fn set_realtime_data_mode(&self, enabled: bool) -> Result<(), Error> {
         self.set_device_mode(if enabled {
             &CMD_REALTIME_ENABLE
         } else {
@@ -355,23 +456,42 @@ impl Miflora {
         .await
     }
 
-    async fn set_device_mode(&self, payload: &[u8]) -> anyhow::Result<()> {
+    async fn set_device_mode(&self, payload: &[u8]) -> Result<(), Error> {
         let char = self
             .characteristic(SERVICE_DATA_ID, CHARACTERISTIC_MODE_ID)
             .await?;
-        char.write_ext(payload, &WRITE_OPTS).await?;
-        let data = char.read().await?;
+        char.write_ext(payload, &WRITE_OPTS)
+            .await
+            .map_err(|err| Error::UnableToWrite {
+                service_id: SERVICE_DATA_ID,
+                characteristic_id: CHARACTERISTIC_MODE_ID,
+                cause: err,
+            })?;
+        let data = char.read().await.map_err(|err| Error::UnableToRead {
+            characteristic_id: CHARACTERISTIC_MODE_ID,
+            service_id: SERVICE_DATA_ID,
+            cause: err,
+        })?;
         if !data.eq(payload) {
-            return Err(anyhow::anyhow!("failed to write device mode"));
+            return Err(Error::InvalidWrittenValue {
+                characteristic_id: CHARACTERISTIC_MODE_ID,
+                service_id: SERVICE_DATA_ID,
+            });
         }
         Ok(())
     }
 
     #[tracing::instrument(skip(self), fields(address = %self.device.address()))]
-    async fn try_disconnect(&self, retry: u8) -> anyhow::Result<()> {
+    pub async fn try_disconnect(&self, retry: u8) -> Result<(), Error> {
         let mut count = retry;
+        let mut causes = Vec::new();
         while count > 0 {
-            if !self.device.is_connected().await? {
+            if !self
+                .device
+                .is_connected()
+                .await
+                .map_err(|err| Error::CommandFailed { cause: err })?
+            {
                 tracing::debug!("already disconnected");
                 return Ok(());
             }
@@ -382,19 +502,14 @@ impl Miflora {
                 }
                 Err(err) => {
                     tracing::warn!(message = "unable to disconnect", cause = %err);
+                    causes.push(err);
                 }
             }
             count -= 1;
         }
-        Err(anyhow::anyhow!("unable to disconnect..."))
+        Err(Error::TooManyRetries {
+            retries: retry,
+            causes,
+        })
     }
-}
-
-pub async fn handle(adapter: Adapter, addr: Address) -> anyhow::Result<()> {
-    let miflora = Miflora::from_adapter(&adapter, addr)?;
-    miflora.try_connect(5).await?;
-    println!("info:   {:?}", miflora.read_system().await?);
-    println!("values: {:?}", miflora.read_historical_values().await?);
-    miflora.try_disconnect(5).await?;
-    Ok(())
 }

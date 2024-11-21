@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 use std::env;
 
-use bluer::{AdapterEvent, Address, DiscoveryFilter, DiscoveryTransport};
-use bluer_miflora::handle;
+use bluer::{Adapter, AdapterEvent, Address, DiscoveryFilter, DiscoveryTransport};
+use bluer_miflora::Miflora;
 use futures::{pin_mut, StreamExt};
 
 // async fn query_all_device_properties(adapter: &Adapter, addr: Address) -> bluer::Result<()> {
@@ -14,13 +14,21 @@ use futures::{pin_mut, StreamExt};
 //     Ok(())
 // }
 
+pub async fn handle(adapter: Adapter, addr: Address) -> anyhow::Result<()> {
+    let miflora = Miflora::from_adapter(&adapter, addr)?;
+    miflora.try_connect(5).await?;
+    println!("info:   {:?}", miflora.read_system().await?);
+    println!("values: {:?}", miflora.read_historical_values().await?);
+    miflora.try_disconnect(5).await?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let addresses: HashSet<_> = env::args()
         .filter_map(|arg| arg.parse::<Address>().ok())
         .collect();
 
-    env_logger::init();
     let session = bluer::Session::new().await?;
     let adapter = session.default_adapter().await?;
     println!(
@@ -61,45 +69,6 @@ async fn main() -> anyhow::Result<()> {
             _ => {}
         }
     }
-
-    // let mut all_change_events = SelectAll::new();
-
-    // loop {
-    //     tokio::select! {
-    //         Some(device_event) = device_events.next() => {
-    //             match device_event {
-    //                 AdapterEvent::DeviceAdded(addr) => {
-    //                     if !filter_addr.is_empty() && !filter_addr.contains(&addr) {
-    //                         continue;
-    //                     }
-
-    //                     println!("Device added: {addr}");
-    //                     if let Err(err) = bluer_miflora::handle(&adapter, addr, None).await {
-    //                         println!("    Error: {}", &err);
-    //                     }
-
-    //                     let device = adapter.device(addr)?;
-    //                     let change_events = device.events().await?.map(move |evt| (addr, evt));
-    //                     all_change_events.push(change_events);
-    //                 }
-    //                 AdapterEvent::DeviceRemoved(addr) => {
-    //                     println!("Device removed: {addr}");
-    //                 }
-    //                 _ => (),
-    //             }
-    //             println!();
-    //         }
-    //         Some((addr, DeviceEvent::PropertyChanged(property))) = all_change_events.next() => {
-    //             println!("Device changed: {addr}");
-    //             println!("    {property:?}");
-
-    //             if let Err(err) = bluer_miflora::handle(&adapter, addr, Some(property)).await {
-    //                 println!("    Error: {}", &err);
-    //             }
-    //         }
-    //         else => break
-    //     }
-    // }
 
     Ok(())
 }
