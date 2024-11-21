@@ -107,7 +107,8 @@ pub enum Error {
     #[error("too many retries")]
     TooManyRetries {
         retries: u8,
-        causes: Vec<bluer::Error>,
+        #[source]
+        cause: bluer::Error,
     },
 }
 
@@ -302,6 +303,11 @@ impl Miflora {
 
     async fn read(&self, service_id: u16, char_id: u16) -> Result<Vec<u8>, Error> {
         let char = self.characteristic(service_id, char_id).await?;
+        tracing::trace!(
+            message = "reading",
+            service = service_id,
+            characteristic = char_id
+        );
         char.read().await.map_err(|err| Error::UnableToRead {
             characteristic_id: char_id,
             service_id,
@@ -310,16 +316,26 @@ impl Miflora {
     }
 
     #[tracing::instrument(skip(self), fields(address = %self.device.address()))]
+    pub async fn is_connected(&self) -> Result<bool, Error> {
+        self.device
+            .is_connected()
+            .await
+            .map_err(|err| Error::CommandFailed { cause: err })
+    }
+
+    #[tracing::instrument(skip(self), fields(address = %self.device.address()))]
+    pub async fn connect(&self) -> Result<(), Error> {
+        self.device
+            .connect()
+            .await
+            .map_err(|err| Error::CommandFailed { cause: err })
+    }
+
+    #[tracing::instrument(skip(self), fields(address = %self.device.address()))]
     pub async fn try_connect(&self, retry: u8) -> Result<(), Error> {
-        let mut count = retry;
-        let mut causes = Vec::new();
-        while count > 0 {
-            if self
-                .device
-                .is_connected()
-                .await
-                .map_err(|err| Error::CommandFailed { cause: err })?
-            {
+        let mut count = 0;
+        loop {
+            if self.is_connected().await? {
                 tracing::debug!("already connected");
                 return Ok(());
             }
@@ -329,16 +345,52 @@ impl Miflora {
                     return Ok(());
                 }
                 Err(err) => {
-                    tracing::warn!(message = "unable to connect", cause = %err);
-                    causes.push(err);
+                    count += 1;
+                    tracing::warn!(message = "unable to connect", tries = count, cause = %err);
+                    if count > retry {
+                        return Err(Error::TooManyRetries {
+                            retries: count,
+                            cause: err,
+                        });
+                    }
                 }
             }
-            count -= 1;
         }
-        Err(Error::TooManyRetries {
-            retries: retry,
-            causes,
-        })
+    }
+
+    #[tracing::instrument(skip(self), fields(address = %self.device.address()))]
+    pub async fn disconnect(&self) -> Result<(), Error> {
+        self.device
+            .disconnect()
+            .await
+            .map_err(|err| Error::CommandFailed { cause: err })
+    }
+
+    #[tracing::instrument(skip(self), fields(address = %self.device.address()))]
+    pub async fn try_disconnect(&self, retry: u8) -> Result<(), Error> {
+        let mut count = 0;
+        loop {
+            if !self.is_connected().await? {
+                tracing::debug!("already disconnected");
+                return Ok(());
+            }
+            match self.device.disconnect().await {
+                Ok(_) => {
+                    tracing::info!("device disconnected");
+                    return Ok(());
+                }
+                Err(err) => {
+                    count += 1;
+                    tracing::warn!(message = "unable to disconnect", tries = count, cause = %err);
+                    if count > retry {
+                        return Err(Error::TooManyRetries {
+                            retries: count,
+                            cause: err,
+                        });
+                    }
+                }
+            }
+        }
     }
 
     #[tracing::instrument(skip(self), fields(address = %self.device.address()))]
@@ -363,6 +415,11 @@ impl Miflora {
         let char = self
             .characteristic(SERVICE_HISTORY_ID, CHARACTERISTIC_HISTORY_TIME_ID)
             .await?;
+        tracing::trace!(
+            message = "reading",
+            service = SERVICE_HISTORY_ID,
+            characteristic = CHARACTERISTIC_HISTORY_TIME_ID
+        );
         let data = char.read().await.map_err(|err| Error::UnableToWrite {
             characteristic_id: CHARACTERISTIC_HISTORY_TIME_ID,
             service_id: SERVICE_HISTORY_ID,
@@ -384,6 +441,11 @@ impl Miflora {
         let ctrl_char = self
             .characteristic(SERVICE_HISTORY_ID, CHARACTERISTIC_HISTORY_CTRL_ID)
             .await?;
+        tracing::trace!(
+            message = "writing",
+            service = SERVICE_HISTORY_ID,
+            characteristic = CHARACTERISTIC_HISTORY_CTRL_ID
+        );
         ctrl_char
             .write_ext(&CMD_HISTORY_READ_INIT, &WRITE_OPTS)
             .await
@@ -396,6 +458,11 @@ impl Miflora {
         let char = self
             .characteristic(SERVICE_HISTORY_ID, CHARACTERISTIC_HISTORY_READ_ID)
             .await?;
+        tracing::trace!(
+            message = "reading",
+            service = SERVICE_HISTORY_ID,
+            characteristic = CHARACTERISTIC_HISTORY_READ_ID
+        );
         let raw_history_data = char.read().await.map_err(|err| Error::UnableToRead {
             characteristic_id: CHARACTERISTIC_HISTORY_READ_ID,
             service_id: SERVICE_HISTORY_ID,
@@ -412,6 +479,11 @@ impl Miflora {
             for i in 0..history_length {
                 tracing::debug!("loading entry {i}");
                 let payload = self.historical_entry_address(i);
+                tracing::trace!(
+                    message = "writing",
+                    service = SERVICE_HISTORY_ID,
+                    characteristic = CHARACTERISTIC_HISTORY_CTRL_ID
+                );
                 ctrl_char
                     .write_ext(&payload, &WRITE_OPTS)
                     .await
@@ -420,6 +492,11 @@ impl Miflora {
                         service_id: SERVICE_HISTORY_ID,
                         cause: err,
                     })?;
+                tracing::trace!(
+                    message = "reading",
+                    service = SERVICE_HISTORY_ID,
+                    characteristic = CHARACTERISTIC_HISTORY_READ_ID
+                );
                 let data = read_char.read().await.map_err(|err| Error::UnableToRead {
                     characteristic_id: CHARACTERISTIC_HISTORY_READ_ID,
                     service_id: SERVICE_HISTORY_ID,
@@ -436,6 +513,11 @@ impl Miflora {
         let ctrl_char = self
             .characteristic(SERVICE_HISTORY_ID, CHARACTERISTIC_HISTORY_CTRL_ID)
             .await?;
+        tracing::trace!(
+            message = "writing",
+            service = SERVICE_HISTORY_ID,
+            characteristic = CHARACTERISTIC_HISTORY_CTRL_ID
+        );
         ctrl_char
             .write_ext(&CMD_HISTORY_READ_SUCCESS, &WRITE_OPTS)
             .await
@@ -460,6 +542,11 @@ impl Miflora {
         let char = self
             .characteristic(SERVICE_DATA_ID, CHARACTERISTIC_MODE_ID)
             .await?;
+        tracing::trace!(
+            message = "writing",
+            service = SERVICE_DATA_ID,
+            characteristic = CHARACTERISTIC_MODE_ID
+        );
         char.write_ext(payload, &WRITE_OPTS)
             .await
             .map_err(|err| Error::UnableToWrite {
@@ -479,37 +566,5 @@ impl Miflora {
             });
         }
         Ok(())
-    }
-
-    #[tracing::instrument(skip(self), fields(address = %self.device.address()))]
-    pub async fn try_disconnect(&self, retry: u8) -> Result<(), Error> {
-        let mut count = retry;
-        let mut causes = Vec::new();
-        while count > 0 {
-            if !self
-                .device
-                .is_connected()
-                .await
-                .map_err(|err| Error::CommandFailed { cause: err })?
-            {
-                tracing::debug!("already disconnected");
-                return Ok(());
-            }
-            match self.device.disconnect().await {
-                Ok(_) => {
-                    tracing::info!("device disconnected");
-                    return Ok(());
-                }
-                Err(err) => {
-                    tracing::warn!(message = "unable to disconnect", cause = %err);
-                    causes.push(err);
-                }
-            }
-            count -= 1;
-        }
-        Err(Error::TooManyRetries {
-            retries: retry,
-            causes,
-        })
     }
 }
