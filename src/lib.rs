@@ -1,16 +1,10 @@
-use std::{
-    borrow::Cow,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::borrow::Cow;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-use bluer::{
-    gatt::{
-        remote::{Characteristic, CharacteristicWriteRequest},
-        WriteOp,
-    },
-    Adapter, Address, Device,
-};
+use bluer::gatt::remote::{Characteristic, CharacteristicWriteRequest};
+use bluer::gatt::WriteOp;
+use bluer::{Adapter, Address, Device};
 
 /// These are the services/characteristics available on a miflora
 /// service=58 characteristic=64

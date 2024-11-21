@@ -1,7 +1,9 @@
+use std::collections::HashSet;
+use std::env;
+
 use bluer::{AdapterEvent, Address, DiscoveryFilter, DiscoveryTransport};
 use bluer_miflora::handle;
 use futures::{pin_mut, StreamExt};
-use std::{collections::HashSet, env};
 
 // async fn query_all_device_properties(adapter: &Adapter, addr: Address) -> bluer::Result<()> {
 //     let device = adapter.device(addr)?;
