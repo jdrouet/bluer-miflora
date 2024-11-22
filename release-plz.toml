@@ -1,0 +1,8 @@
+[workspace]
+
+[[package]]
+name = "bluer-miflora"
+
+[[package]]
+name = "bluer-miflora-cli"
+publish = false
