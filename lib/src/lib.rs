@@ -28,6 +28,7 @@ use bluer::{Adapter, Address, Device};
 /// service=16 characteristic=22
 /// service=16 characteristic=30
 
+const DEVICE_UUID_PREFIX: u32 = 0xfe95;
 const SERVICE_DATA_ID: u16 = 49;
 const CHARACTERISTIC_MODE_ID: u16 = 50;
 const CHARACTERISTIC_DATA_ID: u16 = 52;
@@ -110,6 +111,10 @@ pub enum Error {
         #[source]
         cause: bluer::Error,
     },
+    #[error("no service data provided")]
+    NoServiceData,
+    #[error("the provided device is not supported")]
+    DeviceNotSupported,
 }
 
 #[derive(Clone)]
@@ -269,15 +274,35 @@ impl From<Device> for Miflora {
     }
 }
 
+pub async fn is_miflora_device(device: &Device) -> Result<bool, Error> {
+    let service_data = device
+        .service_data()
+        .await
+        .map_err(|err| Error::CommandFailed { cause: err })?;
+    let service_data = service_data.ok_or(Error::NoServiceData)?;
+    Ok(service_data.iter().any(|(uuid, _data)| {
+        let (id, _, _, _) = uuid.as_fields();
+        id == DEVICE_UUID_PREFIX
+    }))
+}
+
 impl Miflora {
-    pub fn from_adapter(adapter: &Adapter, address: Address) -> Result<Self, Error> {
-        adapter
+    pub async fn try_from_adapter(adapter: &Adapter, address: Address) -> Result<Self, Error> {
+        let device = adapter
             .device(address)
-            .map(Self::from)
             .map_err(|err| Error::DeviceNotFound {
                 address,
                 cause: err,
-            })
+            })?;
+        Self::try_from_device(device).await
+    }
+
+    pub async fn try_from_device(device: Device) -> Result<Self, Error> {
+        if is_miflora_device(&device).await? {
+            Ok(Self { device })
+        } else {
+            Err(Error::DeviceNotSupported)
+        }
     }
 
     async fn characteristic(&self, service_id: u16, char_id: u16) -> Result<Characteristic, Error> {

@@ -20,7 +20,7 @@ fn enable_tracing() {
 }
 
 pub async fn handle(adapter: Adapter, addr: Address) -> anyhow::Result<()> {
-    let miflora = Miflora::from_adapter(&adapter, addr)?;
+    let miflora = Miflora::try_from_adapter(&adapter, addr).await?;
     miflora.try_connect(5).await?;
     let system = miflora.read_system().await?;
     tracing::info!(message = "system information", address = %addr, battery = system.battery(), firmware = %system.firmware());
