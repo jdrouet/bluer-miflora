@@ -306,24 +306,36 @@ impl Miflora {
     }
 
     async fn characteristic(&self, service_id: u16, char_id: u16) -> Result<Characteristic, Error> {
-        let service =
-            self.device
-                .service(service_id)
-                .await
-                .map_err(|err| Error::ServiceNotFound {
-                    service_id,
-                    cause: err,
-                })?;
-        let char =
-            service
-                .characteristic(char_id)
-                .await
-                .map_err(|err| Error::CharacteristicNotFound {
-                    characteristic_id: char_id,
-                    service_id,
-                    cause: err,
-                })?;
-        Ok(char)
+        let services = self
+            .device
+            .services()
+            .await
+            .map_err(|err| Error::CommandFailed { cause: err })?;
+        let service = services
+            .into_iter()
+            .find(|s| s.id() == service_id)
+            .ok_or_else(|| Error::ServiceNotFound {
+                service_id,
+                cause: bluer::Error {
+                    kind: bluer::ErrorKind::NotFound,
+                    message: "service not found".into(),
+                },
+            })?;
+        let characteristics = service
+            .characteristics()
+            .await
+            .map_err(|err| Error::CommandFailed { cause: err })?;
+        characteristics
+            .into_iter()
+            .find(|c| c.id() == char_id)
+            .ok_or_else(|| Error::CharacteristicNotFound {
+                characteristic_id: char_id,
+                service_id,
+                cause: bluer::Error {
+                    kind: bluer::ErrorKind::NotFound,
+                    message: "characteristic not found".into(),
+                },
+            })
     }
 
     async fn read(&self, service_id: u16, char_id: u16) -> Result<Vec<u8>, Error> {

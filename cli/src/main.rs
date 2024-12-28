@@ -19,11 +19,14 @@ fn enable_tracing() {
     }
 }
 
+#[tracing::instrument(skip(adapter))]
 pub async fn handle(adapter: Adapter, addr: Address) -> anyhow::Result<()> {
     let miflora = Miflora::try_from_adapter(&adapter, addr).await?;
+    tracing::info!("connecting...");
     miflora.try_connect(5).await?;
+    tracing::info!("reading system info...");
     let system = miflora.read_system().await?;
-    tracing::info!(message = "system information", address = %addr, battery = system.battery(), firmware = %system.firmware());
+    tracing::info!(message = "system information", battery = system.battery(), firmware = %system.firmware());
     let values = miflora.read_realtime_values().await?;
     tracing::info!(
         message = "realtime values",
@@ -67,7 +70,10 @@ async fn main() -> anyhow::Result<()> {
     while let Some(event) = device_events.next().await {
         match event {
             AdapterEvent::DeviceAdded(addr) => {
-                let device = adapter.device(addr)?;
+                let Ok(device) = adapter.device(addr) else {
+                    tracing::error!(message = "device not found", address = %addr);
+                    continue;
+                };
                 let name = device.name().await?;
                 tracing::debug!(message = "device discovered", address = %addr, name = ?name);
                 if addresses.contains(&addr) {
