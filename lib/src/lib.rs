@@ -5,29 +5,30 @@ use bluer::gatt::remote::{Characteristic, CharacteristicWriteRequest};
 use bluer::gatt::WriteOp;
 use bluer::{Adapter, Address, Device};
 
-/// These are the services/characteristics available on a miflora
-/// service=58 characteristic=64
-/// service=58 characteristic=59
-/// service=58 characteristic=61
-/// service=49 characteristic=55
-/// service=49 characteristic=52
-/// service=49 characteristic=50
-/// service=12 characteristic=13
-/// service=35 characteristic=38
-/// service=35 characteristic=42
-/// service=35 characteristic=40
-/// service=35 characteristic=36
-/// service=35 characteristic=44
-/// service=35 characteristic=46
-/// service=16 characteristic=28
-/// service=16 characteristic=20
-/// service=16 characteristic=26
-/// service=16 characteristic=17
-/// service=16 characteristic=32
-/// service=16 characteristic=24
-/// service=16 characteristic=22
-/// service=16 characteristic=30
+// These are the services/characteristics available on a miflora
+// service=58 characteristic=64
+// service=58 characteristic=59
+// service=58 characteristic=61
+// service=49 characteristic=55
+// service=49 characteristic=52
+// service=49 characteristic=50
+// service=12 characteristic=13
+// service=35 characteristic=38
+// service=35 characteristic=42
+// service=35 characteristic=40
+// service=35 characteristic=36
+// service=35 characteristic=44
+// service=35 characteristic=46
+// service=16 characteristic=28
+// service=16 characteristic=20
+// service=16 characteristic=26
+// service=16 characteristic=17
+// service=16 characteristic=32
+// service=16 characteristic=24
+// service=16 characteristic=22
+// service=16 characteristic=30
 
+/// Device UUID prefix of miflora service
 const DEVICE_UUID_PREFIX: u32 = 0xfe95;
 const SERVICE_DATA_ID: u16 = 49;
 const CHARACTERISTIC_MODE_ID: u16 = 50;
